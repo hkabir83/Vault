@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Professional Vault with Encrypted Storage</title>
+<style>
+body { font-family: Arial; margin: 40px; background:#f4f6f8; }
+h2 { margin-bottom:10px; }
+input, button { padding:8px; margin:5px; }
+button { cursor:pointer; }
+table { border-collapse: collapse; width:100%; margin-top:20px; background:white;}
+th, td { border:1px solid #ddd; padding:10px; }
+th { background:#f0f0f0; }
+#app { display:none; }
+.action-btn { margin-right:5px; }
+.top-bar { margin-bottom:15px; }
+</style>
+</head>
+<body>
+
+<h2>🔐 Professional Vault (Refresh-Safe)</h2>
+
+<div id="login">
+<input type="password" id="masterPassword" placeholder="Enter Master Password">
+<button onclick="unlock()">Unlock</button>
+<input type="file" id="fileInput" onchange="importVault(event)">
+</div>
+
+<div id="app">
+
+<div class="top-bar">
+<button onclick="exportVault()">Export Vault</button>
+<button onclick="lockVault()">Lock</button>
+<span id="timer"></span>
+</div>
+
+<h3>Add / Edit Credential</h3>
+<input type="hidden" id="editIndex">
+<input type="text" id="website" placeholder="Website">
+<input type="text" id="username" placeholder="Username">
+<input type="password" id="password" placeholder="Password">
+<input type="text" id="notes" placeholder="Notes">
+<button onclick="saveCredential()">Save</button>
+
+<h3>Search</h3>
+<input type="text" id="search" onkeyup="renderTable()">
+
+<table>
+<thead>
+<tr>
+<th>Website</th>
+<th>Username</th>
+<th>Password</th>
+<th>Notes</th>
+<th>Actions</th>
+</tr>
+</thead>
+<tbody id="tableBody"></tbody>
+</table>
+
+</div>
+
+<script>
+let vault = [];
+let masterKey = null;
+let salt = null;
+let inactivityTimer;
+const AUTO_LOCK_TIME = 2 * 60 * 1000; // 2 minutes
+
+async function deriveKey(password, salt) {
+    const enc = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey(
+        "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
+    );
+    return crypto.subtle.deriveKey({
+        name: "PBKDF2",
+        salt: salt,
+        iterations: 100000,
+        hash: "SHA-256"
+    }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+
+async function unlock() {
+    const password = document.getElementById("masterPassword").value;
+    if (!password) return alert("Enter master password");
+
+    // Load vault from localStorage if exists
+    const stored = localStorage.getItem("secureVault");
+    if(stored){
+        try{
+            const json = JSON.parse(stored);
+            salt = new Uint8Array(json.salt);
+            masterKey = await deriveKey(password,salt);
+            const iv = new Uint8Array(json.iv);
+            const data = new Uint8Array(json.data);
+            const decrypted = await crypto.subtle.decrypt(
+                {name:"AES-GCM", iv:iv},
+                masterKey,
+                data
+            );
+            vault = JSON.parse(new TextDecoder().decode(decrypted));
+        } catch {
+            alert("Wrong password or corrupted vault");
+            return;
+        }
+    } else {
+        salt = crypto.getRandomValues(new Uint8Array(16));
+        masterKey = await deriveKey(password,salt);
+    }
+
+    document.getElementById("login").style.display="none";
+    document.getElementById("app").style.display="block";
+    renderTable();
+    resetTimer();
+}
+
+function resetTimer(){
+    clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(lockVault, AUTO_LOCK_TIME);
+}
+
+document.addEventListener("mousemove", resetTimer);
+document.addEventListener("keydown", resetTimer);
+
+function lockVault(){
+    masterKey=null;
+    vault=[];
+    document.getElementById("app").style.display="none";
+    document.getElementById("login").style.display="block";
+    document.getElementById("masterPassword").value="";
+}
+
+async function saveVaultToStorage(){
+    if(!masterKey) return;
+    const enc = new TextEncoder();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encrypted = await crypto.subtle.encrypt(
+        {name:"AES-GCM", iv:iv},
+        masterKey,
+        enc.encode(JSON.stringify(vault))
+    );
+    const obj = {
+        salt: Array.from(salt),
+        iv: Array.from(iv),
+        data: Array.from(new Uint8Array(encrypted))
+    };
+    localStorage.setItem("secureVault", JSON.stringify(obj));
+}
+
+function saveCredential(){
+    const website=document.getElementById("website").value;
+    const username=document.getElementById("username").value;
+    const password=document.getElementById("password").value;
+    const notes=document.getElementById("notes").value;
+    if(!website||!username||!password) return alert("Required fields missing");
+
+    const index=document.getElementById("editIndex").value;
+    const data={website,username,password,notes};
+
+    if(index===""){
+        vault.push(data);
+    } else {
+        vault[index]=data;
+    }
+
+    clearForm();
+    renderTable();
+    saveVaultToStorage(); // Save automatically to localStorage
+}
+
+function clearForm(){
+    document.getElementById("website").value="";
+    document.getElementById("username").value="";
+    document.getElementById("password").value="";
+    document.getElementById("notes").value="";
+    document.getElementById("editIndex").value="";
+}
+
+function renderTable(){
+    const search=document.getElementById("search").value?.toLowerCase()||"";
+    const body=document.getElementById("tableBody");
+    body.innerHTML="";
+    vault.forEach((item,i)=>{
+        if(item.website.toLowerCase().includes(search)||
+           item.username.toLowerCase().includes(search)||
+           item.notes.toLowerCase().includes(search)){
+            body.innerHTML+=`
+            <tr>
+                <td>${item.website}</td>
+                <td>${item.username}</td>
+                <td>
+                    <span id="pw${i}" style="display:none">${item.password}</span>
+                    <button onclick="togglePw(${i})">Show</button>
+                </td>
+                <td>${item.notes}</td>
+                <td>
+                    <button onclick="editCredential(${i})">Edit</button>
+                    <button onclick="deleteCredential(${i})">Delete</button>
+                </td>
+            </tr>`;
+        }
+    });
+}
+
+function togglePw(i){
+    const el=document.getElementById("pw"+i);
+    el.style.display=el.style.display==="none"?"inline":"none";
+}
+
+function editCredential(i){
+    const item=vault[i];
+    document.getElementById("website").value=item.website;
+    document.getElementById("username").value=item.username;
+    document.getElementById("password").value=item.password;
+    document.getElementById("notes").value=item.notes;
+    document.getElementById("editIndex").value=i;
+}
+
+function deleteCredential(i){
+    vault.splice(i,1);
+    renderTable();
+    saveVaultToStorage(); // Update storage after delete
+}
+
+async function exportVault(){
+    if(!masterKey) return alert("Unlock first");
+    const enc=new TextEncoder();
+    const iv=crypto.getRandomValues(new Uint8Array(12));
+    const encrypted=await crypto.subtle.encrypt(
+        {name:"AES-GCM",iv:iv},
+        masterKey,
+        enc.encode(JSON.stringify(vault))
+    );
+
+    const blob=new Blob([JSON.stringify({
+        salt:Array.from(salt),
+        iv:Array.from(iv),
+        data:Array.from(new Uint8Array(encrypted))
+    })],{type:"application/json"});
+
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download="vault.secure";
+    a.click();
+}
+
+async function importVault(event){
+    const file=event.target.files[0];
+    if(!file) return;
+    const text=await file.text();
+    const json=JSON.parse(text);
+
+    const password=document.getElementById("masterPassword").value;
+    if(!password) return alert("Enter master password first");
+
+    salt=new Uint8Array(json.salt);
+    masterKey=await deriveKey(password,salt);
+
+    const iv=new Uint8Array(json.iv);
+    const data=new Uint8Array(json.data);
+
+    try{
+        const decrypted=await crypto.subtle.decrypt(
+            {name:"AES-GCM",iv:iv},
+            masterKey,
+            data
+        );
+        vault=JSON.parse(new TextDecoder().decode(decrypted));
+        document.getElementById("login").style.display="none";
+        document.getElementById("app").style.display="block";
+        renderTable();
+        saveVaultToStorage(); // Save imported vault to localStorage
+        resetTimer();
+    }catch{
+        alert("Wrong password or corrupted file");
+    }
+}
+</script>
+
+</body>
+</html>
