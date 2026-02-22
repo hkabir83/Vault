@@ -2,7 +2,19 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Professional Vault with Encrypted Storage</title>
+<title>Professional Vault PWA</title>
+
+<!-- Self-contained manifest -->
+<link rel="manifest" href="data:application/json,{
+  'name':'Professional Vault',
+  'short_name':'Vault',
+  'start_url':'./',
+  'display':'standalone',
+  'background_color':'#f4f6f8',
+  'theme_color':'#007bff',
+  'icons':[{'src':'','sizes':'192x192','type':'image/png'}]
+}">
+
 <style>
 body { font-family: Arial; margin: 40px; background:#f4f6f8; }
 h2 { margin-bottom:10px; }
@@ -12,13 +24,12 @@ table { border-collapse: collapse; width:100%; margin-top:20px; background:white
 th, td { border:1px solid #ddd; padding:10px; }
 th { background:#f0f0f0; }
 #app { display:none; }
-.action-btn { margin-right:5px; }
 .top-bar { margin-bottom:15px; }
 </style>
 </head>
 <body>
 
-<h2>🔐 Professional Vault (Refresh-Safe)</h2>
+<h2>🔐 Professional Vault (Standalone PWA)</h2>
 
 <div id="login">
 <input type="password" id="masterPassword" placeholder="Enter Master Password">
@@ -27,7 +38,6 @@ th { background:#f0f0f0; }
 </div>
 
 <div id="app">
-
 <div class="top-bar">
 <button onclick="exportVault()">Export Vault</button>
 <button onclick="lockVault()">Lock</button>
@@ -57,34 +67,27 @@ th { background:#f0f0f0; }
 </thead>
 <tbody id="tableBody"></tbody>
 </table>
-
 </div>
 
 <script>
+// --- Vault logic (refresh-safe version) ---
 let vault = [];
 let masterKey = null;
 let salt = null;
 let inactivityTimer;
-const AUTO_LOCK_TIME = 2 * 60 * 1000; // 2 minutes
+const AUTO_LOCK_TIME = 2*60*1000;
 
-async function deriveKey(password, salt) {
+// --- Derive key ---
+async function deriveKey(password, salt){
     const enc = new TextEncoder();
-    const keyMaterial = await crypto.subtle.importKey(
-        "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
-    );
-    return crypto.subtle.deriveKey({
-        name: "PBKDF2",
-        salt: salt,
-        iterations: 100000,
-        hash: "SHA-256"
-    }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+    const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey({name:"PBKDF2",salt:salt,iterations:100000,hash:"SHA-256"}, keyMaterial, {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]);
 }
 
-async function unlock() {
+// --- Unlock vault ---
+async function unlock(){
     const password = document.getElementById("masterPassword").value;
-    if (!password) return alert("Enter master password");
-
-    // Load vault from localStorage if exists
+    if(!password) return alert("Enter master password");
     const stored = localStorage.getItem("secureVault");
     if(stored){
         try{
@@ -93,187 +96,95 @@ async function unlock() {
             masterKey = await deriveKey(password,salt);
             const iv = new Uint8Array(json.iv);
             const data = new Uint8Array(json.data);
-            const decrypted = await crypto.subtle.decrypt(
-                {name:"AES-GCM", iv:iv},
-                masterKey,
-                data
-            );
+            const decrypted = await crypto.subtle.decrypt({name:"AES-GCM",iv:iv},masterKey,data);
             vault = JSON.parse(new TextDecoder().decode(decrypted));
-        } catch {
-            alert("Wrong password or corrupted vault");
-            return;
-        }
+        }catch{ alert("Wrong password or corrupted vault"); return; }
     } else {
         salt = crypto.getRandomValues(new Uint8Array(16));
         masterKey = await deriveKey(password,salt);
+        await saveVaultToStorage(); // create empty vault storage
     }
-
     document.getElementById("login").style.display="none";
     document.getElementById("app").style.display="block";
-    renderTable();
-    resetTimer();
+    renderTable(); resetTimer();
 }
 
-function resetTimer(){
-    clearTimeout(inactivityTimer);
-    inactivityTimer = setTimeout(lockVault, AUTO_LOCK_TIME);
-}
-
+// --- Auto-lock timer ---
+function resetTimer(){ clearTimeout(inactivityTimer); inactivityTimer = setTimeout(lockVault,AUTO_LOCK_TIME); }
 document.addEventListener("mousemove", resetTimer);
 document.addEventListener("keydown", resetTimer);
 
-function lockVault(){
-    masterKey=null;
-    vault=[];
-    document.getElementById("app").style.display="none";
-    document.getElementById("login").style.display="block";
-    document.getElementById("masterPassword").value="";
-}
+// --- Lock vault ---
+function lockVault(){ masterKey=null; vault=[]; document.getElementById("app").style.display="none"; document.getElementById("login").style.display="block"; document.getElementById("masterPassword").value=""; }
 
+// --- Save vault to storage ---
 async function saveVaultToStorage(){
     if(!masterKey) return;
     const enc = new TextEncoder();
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const encrypted = await crypto.subtle.encrypt(
-        {name:"AES-GCM", iv:iv},
-        masterKey,
-        enc.encode(JSON.stringify(vault))
-    );
-    const obj = {
-        salt: Array.from(salt),
-        iv: Array.from(iv),
-        data: Array.from(new Uint8Array(encrypted))
-    };
-    localStorage.setItem("secureVault", JSON.stringify(obj));
+    const encrypted = await crypto.subtle.encrypt({name:"AES-GCM",iv:iv},masterKey,enc.encode(JSON.stringify(vault)));
+    const obj={salt:Array.from(salt),iv:Array.from(iv),data:Array.from(new Uint8Array(encrypted))};
+    localStorage.setItem("secureVault",JSON.stringify(obj));
 }
 
+// --- Credentials CRUD ---
 function saveCredential(){
     const website=document.getElementById("website").value;
     const username=document.getElementById("username").value;
     const password=document.getElementById("password").value;
     const notes=document.getElementById("notes").value;
     if(!website||!username||!password) return alert("Required fields missing");
-
     const index=document.getElementById("editIndex").value;
     const data={website,username,password,notes};
-
-    if(index===""){
-        vault.push(data);
-    } else {
-        vault[index]=data;
-    }
-
-    clearForm();
-    renderTable();
-    saveVaultToStorage(); // Save automatically to localStorage
+    if(index===""){ vault.push(data); } else { vault[index]=data; }
+    clearForm(); renderTable(); saveVaultToStorage();
 }
-
-function clearForm(){
-    document.getElementById("website").value="";
-    document.getElementById("username").value="";
-    document.getElementById("password").value="";
-    document.getElementById("notes").value="";
-    document.getElementById("editIndex").value="";
-}
-
+function clearForm(){ document.getElementById("website").value=""; document.getElementById("username").value=""; document.getElementById("password").value=""; document.getElementById("notes").value=""; document.getElementById("editIndex").value=""; }
 function renderTable(){
     const search=document.getElementById("search").value?.toLowerCase()||"";
-    const body=document.getElementById("tableBody");
-    body.innerHTML="";
+    const body=document.getElementById("tableBody"); body.innerHTML="";
     vault.forEach((item,i)=>{
         if(item.website.toLowerCase().includes(search)||
            item.username.toLowerCase().includes(search)||
            item.notes.toLowerCase().includes(search)){
-            body.innerHTML+=`
-            <tr>
-                <td>${item.website}</td>
-                <td>${item.username}</td>
-                <td>
-                    <span id="pw${i}" style="display:none">${item.password}</span>
-                    <button onclick="togglePw(${i})">Show</button>
-                </td>
-                <td>${item.notes}</td>
-                <td>
-                    <button onclick="editCredential(${i})">Edit</button>
-                    <button onclick="deleteCredential(${i})">Delete</button>
-                </td>
-            </tr>`;
+            body.innerHTML+=`<tr><td>${item.website}</td><td>${item.username}</td><td><span id="pw${i}" style="display:none">${item.password}</span><button onclick="togglePw(${i})">Show</button></td><td>${item.notes}</td><td><button onclick="editCredential(${i})">Edit</button><button onclick="deleteCredential(${i})">Delete</button></td></tr>`;
         }
     });
 }
+function togglePw(i){ const el=document.getElementById("pw"+i); el.style.display=el.style.display==="none"?"inline":"none"; }
+function editCredential(i){ const item=vault[i]; document.getElementById("website").value=item.website; document.getElementById("username").value=item.username; document.getElementById("password").value=item.password; document.getElementById("notes").value=item.notes; document.getElementById("editIndex").value=i; }
+function deleteCredential(i){ vault.splice(i,1); renderTable(); saveVaultToStorage(); }
 
-function togglePw(i){
-    const el=document.getElementById("pw"+i);
-    el.style.display=el.style.display==="none"?"inline":"none";
-}
-
-function editCredential(i){
-    const item=vault[i];
-    document.getElementById("website").value=item.website;
-    document.getElementById("username").value=item.username;
-    document.getElementById("password").value=item.password;
-    document.getElementById("notes").value=item.notes;
-    document.getElementById("editIndex").value=i;
-}
-
-function deleteCredential(i){
-    vault.splice(i,1);
-    renderTable();
-    saveVaultToStorage(); // Update storage after delete
-}
-
+// --- Export / Import ---
 async function exportVault(){
     if(!masterKey) return alert("Unlock first");
     const enc=new TextEncoder();
     const iv=crypto.getRandomValues(new Uint8Array(12));
-    const encrypted=await crypto.subtle.encrypt(
-        {name:"AES-GCM",iv:iv},
-        masterKey,
-        enc.encode(JSON.stringify(vault))
-    );
-
-    const blob=new Blob([JSON.stringify({
-        salt:Array.from(salt),
-        iv:Array.from(iv),
-        data:Array.from(new Uint8Array(encrypted))
-    })],{type:"application/json"});
-
-    const a=document.createElement("a");
-    a.href=URL.createObjectURL(blob);
-    a.download="vault.secure";
-    a.click();
+    const encrypted=await crypto.subtle.encrypt({name:"AES-GCM",iv:iv},masterKey,enc.encode(JSON.stringify(vault)));
+    const blob=new Blob([JSON.stringify({salt:Array.from(salt),iv:Array.from(iv),data:Array.from(new Uint8Array(encrypted))})],{type:"application/json"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="vault.secure"; a.click();
 }
 
 async function importVault(event){
-    const file=event.target.files[0];
-    if(!file) return;
-    const text=await file.text();
-    const json=JSON.parse(text);
-
-    const password=document.getElementById("masterPassword").value;
-    if(!password) return alert("Enter master password first");
-
-    salt=new Uint8Array(json.salt);
-    masterKey=await deriveKey(password,salt);
-
-    const iv=new Uint8Array(json.iv);
-    const data=new Uint8Array(json.data);
-
-    try{
-        const decrypted=await crypto.subtle.decrypt(
-            {name:"AES-GCM",iv:iv},
-            masterKey,
-            data
-        );
+    const file=event.target.files[0]; if(!file) return;
+    const text=await file.text(); const json=JSON.parse(text);
+    const password=document.getElementById("masterPassword").value; if(!password) return alert("Enter master password first");
+    salt=new Uint8Array(json.salt); masterKey=await deriveKey(password,salt);
+    const iv=new Uint8Array(json.iv); const data=new Uint8Array(json.data);
+    try{ const decrypted=await crypto.subtle.decrypt({name:"AES-GCM",iv:iv},masterKey,data);
         vault=JSON.parse(new TextDecoder().decode(decrypted));
-        document.getElementById("login").style.display="none";
-        document.getElementById("app").style.display="block";
-        renderTable();
-        saveVaultToStorage(); // Save imported vault to localStorage
-        resetTimer();
-    }catch{
-        alert("Wrong password or corrupted file");
-    }
+        document.getElementById("login").style.display="none"; document.getElementById("app").style.display="block";
+        renderTable(); await saveVaultToStorage(); resetTimer();
+    }catch{ alert("Wrong password or corrupted file"); }
+}
+
+// --- Service Worker for offline PWA ---
+if('serviceWorker' in navigator){
+    const swCode=`self.addEventListener('install',e=>{e.waitUntil(caches.open('vault-cache-v1').then(c=>c.addAll(['./'])));});
+    self.addEventListener('fetch',e=>{e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request)));});`;
+    const blob = new Blob([swCode],{type:'application/javascript'});
+    const swUrl = URL.createObjectURL(blob);
+    navigator.serviceWorker.register(swUrl).catch(err=>console.log('SW registration failed:',err));
 }
 </script>
 
