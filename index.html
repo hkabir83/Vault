@@ -11,12 +11,12 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 
 <style>
-body{
+body {
   margin:0;
   font-family:-apple-system,BlinkMacSystemFont,sans-serif;
   background:#f2f2f7;
 }
-header{
+header {
   background:white;
   padding:15px;
   text-align:center;
@@ -24,33 +24,40 @@ header{
   font-size:20px;
   border-bottom:1px solid #ddd;
 }
-.container{ padding:20px; }
-.card{
-  background:white;
-  padding:15px;
-  border-radius:14px;
-  margin-bottom:15px;
-  box-shadow:0 2px 6px rgba(0,0,0,0.05);
+.container {
+  padding:20px;
 }
-input{
+input {
   width:100%;
-  padding:12px;
+  padding:10px;
   margin:6px 0;
   border-radius:10px;
   border:1px solid #ddd;
 }
-button{
-  padding:10px 14px;
+button {
+  padding:8px 12px;
   border-radius:10px;
   border:none;
   background:#0A84FF;
   color:white;
   margin:5px 0;
+  cursor:pointer;
 }
-button.secondary{ background:#8e8e93; }
-button.danger{ background:#ff3b30; }
-.hidden{ display:none; }
-hr{ border:none;border-top:1px solid #eee;margin:10px 0; }
+button.secondary { background:#8e8e93; }
+button.danger { background:#ff3b30; }
+table {
+  width:100%;
+  border-collapse:collapse;
+  background:white;
+}
+th, td {
+  padding:10px;
+  border:1px solid #ddd;
+  text-align:left;
+}
+th { background:#f0f0f0; }
+.hidden { display:none; }
+.top-bar { margin-bottom:15px; }
 </style>
 </head>
 <body>
@@ -65,13 +72,15 @@ hr{ border:none;border-top:1px solid #eee;margin:10px 0; }
 
 <div id="app" class="container hidden">
 
-  <div class="card">
-    <button onclick="exportVault()">Export</button>
-    <button onclick="document.getElementById('importFile').click()">Import</button>
+  <!-- Buttons -->
+  <div class="top-bar">
+    <button onclick="exportVault()">Export Vault</button>
+    <button onclick="document.getElementById('importFile').click()">Import Vault</button>
     <button class="secondary" onclick="lockVault()">Lock</button>
     <input type="file" id="importFile" class="hidden" onchange="importVault(event)">
   </div>
 
+  <!-- Add / Edit Credential -->
   <div class="card">
     <input type="hidden" id="editIndex">
     <input type="text" id="website" placeholder="Website">
@@ -81,7 +90,24 @@ hr{ border:none;border-top:1px solid #eee;margin:10px 0; }
     <button onclick="saveCredential()">Save</button>
   </div>
 
-  <div id="vaultList" class="card"></div>
+  <!-- Search -->
+  <div class="card">
+    <input type="text" id="search" placeholder="Search Vault..." oninput="renderVault()">
+  </div>
+
+  <!-- Vault Table -->
+  <table>
+    <thead>
+      <tr>
+        <th>Website</th>
+        <th>Username</th>
+        <th>Password</th>
+        <th>Notes</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="vaultTableBody"></tbody>
+  </table>
 
 </div>
 
@@ -91,32 +117,26 @@ let vault=[];
 let masterKey=null;
 let salt=null;
 
-// Open IndexedDB
+// IndexedDB Setup
 const request=indexedDB.open("FamilyVaultDB",1);
-
 request.onupgradeneeded=e=>{
   db=e.target.result;
   db.createObjectStore("vaultStore");
 };
+request.onsuccess=e=>db=e.target.result;
+request.onerror=e=>console.error("DB error");
 
-request.onsuccess=e=>{
-  db=e.target.result;
-  document.getElementById("status").innerText="Enter shared master password.";
-};
-
-request.onerror=e=>console.error("Database error");
-
-// Derive encryption key
+// Derive key
 async function deriveKey(password,salt){
   const enc=new TextEncoder();
-  const keyMaterial=await crypto.subtle.importKey(
-    "raw",enc.encode(password),"PBKDF2",false,["deriveKey"]);
+  const keyMaterial=await crypto.subtle.importKey("raw",enc.encode(password),"PBKDF2",false,["deriveKey"]);
   return crypto.subtle.deriveKey(
     {name:"PBKDF2",salt:salt,iterations:100000,hash:"SHA-256"},
     keyMaterial,
     {name:"AES-GCM",length:256},
     false,
-    ["encrypt","decrypt"]);
+    ["encrypt","decrypt"]
+  );
 }
 
 // Unlock vault
@@ -130,17 +150,15 @@ async function unlock(){
 
   getReq.onsuccess=async ()=>{
     const stored=getReq.result;
-
     if(stored){
       try{
         salt=new Uint8Array(stored.salt);
         masterKey=await deriveKey(password,salt);
-
         const decrypted=await crypto.subtle.decrypt(
           {name:"AES-GCM",iv:new Uint8Array(stored.iv)},
           masterKey,
-          new Uint8Array(stored.data));
-
+          new Uint8Array(stored.data)
+        );
         vault=JSON.parse(new TextDecoder().decode(decrypted));
       }catch{
         alert("Wrong password");
@@ -151,23 +169,21 @@ async function unlock(){
       masterKey=await deriveKey(password,salt);
       await saveVault();
     }
-
     document.getElementById("login").classList.add("hidden");
     document.getElementById("app").classList.remove("hidden");
     renderVault();
   };
 }
 
-// Save encrypted vault
+// Save vault
 async function saveVault(){
   const enc=new TextEncoder();
   const iv=crypto.getRandomValues(new Uint8Array(12));
-
   const encrypted=await crypto.subtle.encrypt(
     {name:"AES-GCM",iv:iv},
     masterKey,
-    enc.encode(JSON.stringify(vault)));
-
+    enc.encode(JSON.stringify(vault))
+  );
   const tx=db.transaction("vaultStore","readwrite");
   tx.objectStore("vaultStore").put({
     salt:Array.from(salt),
@@ -176,21 +192,31 @@ async function saveVault(){
   },"secureVault");
 }
 
-// Render vault
+// Render vault table with filter
 function renderVault(){
-  const container=document.getElementById("vaultList");
+  const container=document.getElementById("vaultTableBody");
+  const search=document.getElementById("search").value.toLowerCase();
   container.innerHTML="";
   vault.forEach((item,i)=>{
-    container.innerHTML+=`
-      <div>
-        <strong>${item.website}</strong><br>
-        ${item.username}<br>
-        <span id="pw${i}" style="display:none">${item.password}</span>
-        <button onclick="togglePw(${i})">Show</button>
-        <button onclick="editCredential(${i})">Edit</button>
-        <button class="danger" onclick="deleteCredential(${i})">Delete</button>
-        <hr>
-      </div>`;
+    if(item.website.toLowerCase().includes(search)||
+       item.username.toLowerCase().includes(search)||
+       item.notes.toLowerCase().includes(search)){
+
+      container.innerHTML+=`
+      <tr>
+        <td>${item.website}</td>
+        <td>${item.username}</td>
+        <td>
+          <span id="pw${i}" style="display:none">${item.password}</span>
+          <button onclick="togglePw(${i})">Show</button>
+        </td>
+        <td>${item.notes}</td>
+        <td>
+          <button onclick="editCredential(${i})">Edit</button>
+          <button class="danger" onclick="deleteCredential(${i})">Delete</button>
+        </td>
+      </tr>`;
+    }
   });
 }
 
@@ -199,23 +225,19 @@ function togglePw(i){
   el.style.display=el.style.display==="none"?"inline":"none";
 }
 
+// CRUD functions
 function saveCredential(){
   const website=document.getElementById("website").value;
   const username=document.getElementById("username").value;
   const password=document.getElementById("password").value;
   const notes=document.getElementById("notes").value;
-
   if(!website||!username||!password)return alert("Missing fields");
-
   const index=document.getElementById("editIndex").value;
   const data={website,username,password,notes};
-
-  if(index==="")vault.push(data);
+  if(index==="") vault.push(data);
   else vault[index]=data;
-
   document.getElementById("editIndex").value="";
   document.querySelectorAll("input").forEach(i=>i.value="");
-
   renderVault();
   saveVault();
 }
@@ -243,7 +265,7 @@ function lockVault(){
   document.getElementById("masterPassword").value="";
 }
 
-// Export encrypted vault
+// Export / Import
 function exportVault(){
   const tx=db.transaction("vaultStore","readonly");
   tx.objectStore("vaultStore").get("secureVault").onsuccess=e=>{
@@ -255,21 +277,18 @@ function exportVault(){
   };
 }
 
-// Import encrypted vault
 async function importVault(event){
   const file=event.target.files[0];
   if(!file)return;
   const text=await file.text();
   const data=JSON.parse(text);
-
   const tx=db.transaction("vaultStore","readwrite");
   tx.objectStore("vaultStore").put(data,"secureVault");
-
   alert("Imported successfully. Reload and unlock.");
   location.reload();
 }
 
-// Register service worker
+// Service Worker (PWA offline)
 if("serviceWorker" in navigator){
   navigator.serviceWorker.register("sw.js");
 }
